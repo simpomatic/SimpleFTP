@@ -8,6 +8,8 @@ import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
@@ -33,7 +35,7 @@ public class Assn3 {
             System.exit(1);
         }
 
-        boolean binaryTransfer = true, error = false, localActive = false;
+        boolean binaryTransfer = true, error = false, localActive = false, verbose = true;
 
         int base = 0;
         String server = args[base++];
@@ -97,39 +99,88 @@ public class Assn3 {
                     ftp.enterLocalPassiveMode();
                 }
 
-                while (base < args.length) {
-                    String cmd = args[base++];
-                    if (cmd.equals("ls")) {
-                        for (String s : ftp.listNames()) {
-                            System.out.println(s);
-                        }
-                    } else if (cmd.equals("cd")) {
-                        String dir = args[base++];
-                        if (dir.equals("..")) {
-                            ftp.changeToParentDirectory();
-                        } else {
-                            ftp.changeWorkingDirectory(dir);
-                        }
-                    } else if (cmd.equals("delete")) {
-                        String name = args[base++];
-                        ftp.deleteFile(name);
-                    } else if (cmd.equals("get")) {
-                        String remoteFile = args[base++];
-                        String[] remoteFileName = ftp.listNames(remoteFile);
-                        Path currentRelativePath = Paths.get("");
-                        String filePath = currentRelativePath.toAbsolutePath().toString();
-                        filePath += "/" + ftp.listNames(remoteFileName[0]);
+                //Progress bar for downloads
+                if (verbose) {
+                    ftp.setCopyStreamListener(createListener());
+                }
 
-                        File downloadFile = new File(filePath);
-                        OutputStream outputStream = new BufferedOutputStream(new FileOutputStream(downloadFile));
+                String cmd = "";
+                try {
+                    while (base < args.length) {
+                        cmd = args[base++];
+                        if (cmd.equals("ls")) {
+                            for (String s : ftp.listNames()) {
+                                System.out.println(s);
+                            }
+                        } else if (cmd.equals("cd")) {
+                            String dir = args[base++];
+                            if (dir.equals("..")) {
+                                ftp.changeToParentDirectory();
+                            } else {
+                                ftp.changeWorkingDirectory(dir);
+                            }
+                        } else if (cmd.equals("delete")) {
+                            String name = args[base++];
+                            ftp.deleteFile(name);
+                        } else if (cmd.equals("get")) {
+                            String remoteFilePath = args[base++];
+                            Path currentRelativePath = Paths.get("");
+                            String filePath = currentRelativePath.toAbsolutePath().toString();
 
-                        boolean success = ftp.retrieveFile(remoteFile, outputStream);
-                        outputStream.close();
+                            FTPFile files[] = ftp.listFiles(remoteFilePath);
+                            //No files were found under that path
+                            if (files.length == 0) {
+                                System.err.println("Could not locate specified directory or file.");
+                            }
+                            // One file was found under that path, could be that only one directory exists inside that path or simply a single file exists in that path
+                            else if (files.length == 1) {
+                                FTPFile f = files[0];
+                                if (f.isDirectory()) {
+                                    downloadDirectory(ftp, remoteFilePath, "", filePath);
+                                } else if (f.isFile()) {
+                                    filePath += "/" + f.getName();
 
-                        if (success) {
-                            System.out.println("File has been downloaded successfully.");
+                                    File downloadFile = new File(filePath);
+                                    OutputStream outputStream = new BufferedOutputStream(
+                                            new FileOutputStream(downloadFile));
+
+                                    boolean success = ftp.retrieveFile(remoteFilePath, outputStream);
+                                    outputStream.close();
+
+                                    if (success) {
+                                        System.out.println("File has been downloaded successfully.");
+                                    } else {
+                                        System.out.println("File was not downloaded.");
+                                    }
+                                }
+                            }
+                            // Multiple files were found under that path i.e. this is a directory
+                            else {
+                                downloadDirectory(ftp, remoteFilePath, "", filePath);
+                            }
+                        } else if (cmd.equals("put")) {
+                            String varPath = args[base++];
+                            String remotePath = args[base++];
+                            Path path = Paths.get(varPath);
+                            if (Files.isDirectory(path)) {
+
+                            } else {
+                                File uploadFile = new File(varPath);
+                                InputStream fileInputStream = new FileInputStream(uploadFile);
+
+                                boolean success = ftp.storeFile(remotePath, fileInputStream);
+                                fileInputStream.close();
+
+                                if (success) {
+                                    System.out.println("File was successfully uploaded!");
+                                } else {
+                                    System.out.println("File was not uploaded.");
+                                }
+                            }
                         }
                     }
+                } catch (IndexOutOfBoundsException e) {
+                    System.err.println("Command " + cmd + " needs an additional parameter containing the path!");
                 }
 
                 ftp.logout();
@@ -171,5 +222,79 @@ public class Assn3 {
                 megsTotal = megs;
             }
         };
+    }
+
+    private static void downloadDirectory(FTPClient ftpClient, String parentDir, String currentDir, String saveDir)
+            throws IOException {
+        String dirToList = parentDir;
+        if (!currentDir.equals("")) {
+            dirToList += "/" + currentDir;
+        }
+
+        FTPFile[] subFiles = ftpClient.listFiles(dirToList);
+
+        if (subFiles != null && subFiles.length > 0) {
+            for (FTPFile aFile : subFiles) {
+                String currentFileName = aFile.getName();
+                if (currentFileName.equals(".") || currentFileName.equals("..")) {
+                    // skip parent directory and the directory itself
+                    continue;
+                }
+                String filePath = parentDir + "/" + currentDir + "/" + currentFileName;
+                if (currentDir.equals("")) {
+                    filePath = parentDir + "/" + currentFileName;
+                }
+
+                String newDirPath = saveDir + File.separator + parentDir + File.separator + currentDir + File.separator
+                        + currentFileName;
+                if (currentDir.equals("")) {
+                    newDirPath = saveDir + File.separator + parentDir + File.separator + currentFileName;
+                }
+
+                if (aFile.isDirectory()) {
+                    // create the directory in saveDir
+                    File newDir = new File(newDirPath);
+                    boolean created = newDir.mkdirs();
+                    if (created) {
+                        System.out.println("CREATED the directory: " + newDirPath);
+                    } else {
+                        System.out.println("COULD NOT create the directory: " + newDirPath);
+                    }
+
+                    // download the sub directory
+                    downloadDirectory(ftpClient, dirToList, currentFileName, saveDir);
+                } else {
+                    // download the file
+                    boolean success = downloadSingleFile(ftpClient, filePath, newDirPath);
+                    if (success) {
+                        System.out.println("DOWNLOADED the file: " + filePath);
+                    } else {
+                        System.out.println("COULD NOT download the file: " + filePath);
+                    }
+                }
+            }
+        }
+    }
+
+    public static boolean downloadSingleFile(FTPClient ftpClient, String remoteFilePath, String savePath)
+            throws IOException {
+        File downloadFile = new File(savePath);
+
+        File parentDir = downloadFile.getParentFile();
+        if (!parentDir.exists()) {
+            parentDir.mkdir();
+        }
+
+        OutputStream outputStream = new BufferedOutputStream(new FileOutputStream(downloadFile));
+        try {
+            ftpClient.setFileType(FTP.BINARY_FILE_TYPE);
+            return ftpClient.retrieveFile(remoteFilePath, outputStream);
+        } catch (IOException ex) {
+            throw ex;
+        } finally {
+            if (outputStream != null) {
+                outputStream.close();
+            }
+        }
     }
 }
